@@ -1,0 +1,27 @@
+name: Daylight entpacken
+
+on:
+  push:
+    paths:
+      - ".github/workflows/entpacken.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  entpacken:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: ZIP entpacken und speichern
+        run: |
+          unzip -o Daylight-Netlify.zip
+          test -f package.json
+          test -f dist/index.html
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist server netlify scripts tests worker
+          git add package.json package-lock.json netlify.toml README.md .gitignore
+          git diff --cached --quiet || git commit -m "Daylight Projekt entpackt"
+          git push
