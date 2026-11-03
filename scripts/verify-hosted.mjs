@@ -1,0 +1,5 @@
+process.stdout.write('Ready for hosted verification JSON on stdin (input is hidden).\n');
+if(process.stdin.isTTY)process.stdin.setRawMode(true);
+let input='';for await(const chunk of process.stdin){input+=chunk.toString();if(input.includes('\n'))break;}
+if(process.stdin.isTTY)process.stdin.setRawMode(false);process.stdin.pause();
+try{const {origin,token}=JSON.parse(input.trim()),headers={'OAI-Sites-Authorization':`Bearer ${token}`};const get=path=>fetch(origin+path,{headers,redirect:'error'});const a=await get('/api/config'),b=await get('/api/config');if(!a.ok||!b.ok)throw new Error('API unavailable');const first=await a.json(),second=await b.json();if(!first.available||first.publicKey!==second.publicKey)throw new Error('Persistent key check failed');const state=await get('/api/state');if(state.status!==401)throw new Error('User identity boundary check failed');console.log(JSON.stringify({api:true,persistentStorage:true,userIdentityRequired:true,scheduler:first.scheduler}));}catch{console.log(JSON.stringify({verified:false,reason:'Hosted API verification could not complete.'}));process.exitCode=1;}

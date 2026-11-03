@@ -1,0 +1,1 @@
+{"name":"daylight-planner","version":"2.0.0","private":true,"type":"module","scripts":{"build":"node scripts/build.mjs","build:worker":"node scripts/build-worker.mjs","check":"node --check dist/app.js && node --test tests/*.test.mjs"},"dependencies":{"@netlify/blobs":"11.1.7"}}
