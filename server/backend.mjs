@@ -1,5 +1,5 @@
 import {generateVapid,pushRequest,validSubscription,b64} from './push.mjs';
-import {reminderTimestamp} from '../dist/domain.js';
+import {SNAPSHOT_VERSION,isCalendarEvent,isRemovedOccurrence,reminderTimestamp} from '../dist/domain.js';
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json','cache-control':'no-store','x-content-type-options':'nosniff'}});
 const hash=async value=>b64(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)));
 export async function getVapid(store){let saved=await store.get('private/vapid');if(saved)return saved.value;const value=await generateVapid();if(await store.put('private/vapid',value,null))return value;return (await store.get('private/vapid')).value;}
@@ -7,7 +7,7 @@ async function accountFor(request,options){if(options.auth==='chatgpt'){const id
 async function readJson(request){const text=await request.text();if(text.length>20*1024*1024)throw new Error('Request too large');return JSON.parse(text);}
 function validState(state){
  const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x)&&!['__proto__','prototype','constructor'].includes(x),date=x=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(x),optionalDate=x=>!x||date(x),title=x=>typeof x==='string'&&x.length>0&&x.length<=180;
- return state&&state.version===4&&['tasks','projects','series','templates','sessions'].every(k=>Array.isArray(state[k]))&&state.tasks.length<=50000&&state.series.length<=200&&state.templates.length<=500&&state.projects.length<=30&&state.tasks.every(t=>t&&id(t.id)&&title(t.title)&&['todo','doing','done'].includes(t.status)&&optionalDate(t.planned)&&optionalDate(t.due)&&(!t.subtasks||Array.isArray(t.subtasks)&&t.subtasks.length<=100))&&state.series.every(s=>s&&id(s.id)&&title(s.title)&&date(s.start)&&Array.isArray(s.weekdays)&&s.weekdays.length&&s.weekdays.every(d=>Number.isInteger(d)&&d>=0&&d<=6)&&['never','weeks','date'].includes(s.endMode)&&(s.endMode!=='weeks'||Number.isInteger(s.weeks)&&s.weeks>=1&&s.weeks<=520)&&(s.endMode!=='date'||date(s.endDate))&&Array.isArray(s.excluded)&&s.excluded.every(date)&&optionalDate(s.stopAfter)&&optionalDate(s.generationFrom)&&(s.dueOffset===null||Number.isInteger(s.dueOffset)&&Math.abs(s.dueOffset)<=3650));
+ return state&&[4,SNAPSHOT_VERSION].includes(state.version)&&['tasks','projects','series','templates','sessions'].every(k=>Array.isArray(state[k]))&&state.tasks.length<=50000&&state.series.length<=200&&state.templates.length<=500&&state.projects.length<=30&&state.tasks.every(t=>t&&id(t.id)&&title(t.title)&&['todo','doing','done'].includes(t.status)&&optionalDate(t.planned)&&optionalDate(t.due)&&(!isCalendarEvent(t)||state.version===SNAPSHOT_VERSION&&(date(t.planned)||id(t.seriesId)&&date(t.occurrenceDate)))&&(!t.subtasks||Array.isArray(t.subtasks)&&t.subtasks.length<=100))&&state.series.every(s=>s&&id(s.id)&&title(s.title)&&date(s.start)&&Array.isArray(s.weekdays)&&s.weekdays.length&&s.weekdays.every(d=>Number.isInteger(d)&&d>=0&&d<=6)&&['never','weeks','date'].includes(s.endMode)&&(s.endMode!=='weeks'||Number.isInteger(s.weeks)&&s.weeks>=1&&s.weeks<=520)&&(s.endMode!=='date'||date(s.endDate))&&Array.isArray(s.excluded)&&s.excluded.every(date)&&optionalDate(s.stopAfter)&&optionalDate(s.generationFrom)&&(s.dueOffset===null||Number.isInteger(s.dueOffset)&&Math.abs(s.dueOffset)<=3650)&&(!isCalendarEvent(s)||state.version===SNAPSHOT_VERSION));
 }
 
 export async function handleApi(request,store,options={}){
@@ -15,7 +15,17 @@ export async function handleApi(request,store,options={}){
  const account=await accountFor(request,options);if(!account)return json({error:'Anmeldung oder Gerätecode erforderlich.'},401);
  if(!['GET','HEAD'].includes(request.method)){const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return json({error:'Ungültiger Ursprung.'},403);}
  if(path==='/api/state'&&request.method==='GET'){const saved=await store.get(account+'/state');return json({state:saved?.value||null,revision:saved?.etag||null});}
- if(path==='/api/state'&&request.method==='PUT'){const body=await readJson(request);if(!validState(body.state))return json({error:'Ungültiger Datenstand.'},400);const modified=await store.put(account+'/state',body.state,body.revision??null);if(!modified)return json({error:'Gleichzeitige Änderung.'},409);const saved=await store.get(account+'/state');return json({revision:saved.etag});}
+ if(path==='/api/state'&&request.method==='PUT'){
+  const body=await readJson(request),key=account+'/state';
+  if(!validState(body.state))return json({error:'Ungültiger Datenstand.'},400);
+  if(body.state.version<SNAPSHOT_VERSION && (await store.get(key))?.value?.version===SNAPSHOT_VERSION){
+   return json({error:'Bitte Daylight auf diesem Gerät neu öffnen, um die aktuelle Version zu laden.'},409);
+  }
+  const modified=await store.put(key,body.state,body.revision??null);
+  if(!modified)return json({error:'Gleichzeitige Änderung.'},409);
+  const saved=await store.get(key);
+  return json({revision:saved.etag});
+ }
  if(path==='/api/subscriptions'&&['POST','DELETE'].includes(request.method)){const body=await readJson(request);if(typeof body.device!=='string'||body.device.length>100)return json({error:'Ungültiges Gerät.'},400);if(request.method==='POST'&&!validSubscription(body.subscription))return json({error:'Ungültige Push-Anmeldung.'},400);for(let i=0;i<4;i++){const key=account+'/subscriptions',saved=await store.get(key),subscriptions=saved?.value||{};if(request.method==='POST')subscriptions[body.device]=body.subscription;else delete subscriptions[body.device];if(await store.put(key,subscriptions,saved?.etag||null))return json({ok:true});}return json({error:'Bitte erneut versuchen.'},409);}
  if(path==='/api/push-test'&&request.method==='POST'){const body=await readJson(request),subscriptions=(await store.get(account+'/subscriptions'))?.value||{},subscription=subscriptions[body.device];if(!subscription)return json({error:'Benachrichtigungen auf diesem Gerät zuerst aktivieren.'},400);const vapid=await getVapid(store),response=await fetch(subscription.endpoint,await pushRequest(subscription,{title:'Daylight',body:'Deine Test-Erinnerung ist angekommen.',tag:'daylight-test',url:'/'},vapid,new URL(request.url).origin));if(!response.ok)return json({error:'Der Push-Dienst hat die Nachricht abgelehnt.'},502);return json({ok:true});}
  return json({error:'Nicht gefunden.'},404);
@@ -25,8 +35,9 @@ function dayKey(date,timeZone){const p=Object.fromEntries(new Intl.DateTimeForma
 function addDays(key,n){const d=new Date(key+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);}
 function seriesEnd(s){return [s.endMode==='weeks'?addDays(s.start,s.weeks*7-1):s.endMode==='date'?s.endDate:'2200-12-31',s.stopAfter||'2200-12-31'].sort()[0];}
 export function reminderCandidates(state,now=Date.now()){
- const result=new Map(),tasks=new Map((state.tasks||[]).map(t=>[t.id,t]));for(const t of tasks.values()){const when=reminderTimestamp(t);if(when!==null&&when<=now&&when>now-86400000)result.set(t.id,{task:t,when});}
- for(const s of state.series||[]){if(!s.reminder)continue;const tz=s.reminder.timeZone||'Europe/Berlin',current=dayKey(new Date(now),tz),offset=s.reminder.anchor==='due'?s.dueOffset||0:0;for(let n=-2;n<=2;n++){const date=addDays(current,n-offset),id=`${s.id}--${date}`;if(tasks.has(id)||date<s.start||date<(s.generationFrom||s.start)||date>seriesEnd(s)||s.excluded.includes(date)||!s.weekdays.includes(new Date(date+'T12:00:00Z').getUTCDay())||state.deleted?.tasks?.[id])continue;const task={id,title:s.title,planned:date,due:s.dueOffset===null?'':addDays(date,s.dueOffset),time:s.time,status:'todo',reminder:s.reminder};const when=reminderTimestamp(task);if(when!==null&&when<=now&&when>now-86400000)result.set(id,{task,when});}}
+ const result=new Map(),tasks=new Map((state.tasks||[]).map(t=>[t.id,t])),series=new Map((state.series||[]).map(s=>[s.id,s]));
+ for(const t of tasks.values()){const when=reminderTimestamp(t,series.get(t.seriesId));if(when!==null&&when<=now&&when>now-86400000)result.set(t.id,{task:t,when});}
+ for(const s of state.series||[]){if(!s.reminder)continue;const tz=s.reminder.timeZone||'Europe/Berlin',current=dayKey(new Date(now),tz),offset=s.reminder.anchor==='due'?s.dueOffset||0:0;for(let n=-2;n<=2;n++){const date=addDays(current,n-offset),id=`${s.id}--${date}`;if(tasks.has(id)||date<s.start||date<(s.generationFrom||s.start)||date>seriesEnd(s)||s.excluded.includes(date)||!s.weekdays.includes(new Date(date+'T12:00:00Z').getUTCDay())||isRemovedOccurrence(state.deleted,s,id))continue;const task={id,title:s.title,planned:date,due:s.dueOffset===null?'':addDays(date,s.dueOffset),time:s.time,status:'todo',reminder:s.reminder};const when=reminderTimestamp(task);if(when!==null&&when<=now&&when>now-86400000)result.set(id,{task,when});}}
  return [...result.values()];
 }
 export async function dispatchReminders(store,origin,options={}){

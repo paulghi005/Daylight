@@ -10,3 +10,30 @@ test('sync API rejects anonymous and cross-origin writes; CAS protects concurren
 test('encrypted Web Push is decryptable by intended receiver and VAPID signature verifies',async()=>{const {pair,sub}=await subscription(),payload={title:'Daylight',body:'Erinnerung'},body=await encryptPayload(sub,payload);const salt=body.slice(0,16),sender=body.slice(21,86),peer=await crypto.subtle.importKey('raw',sender,{name:'ECDH',namedCurve:'P-256'},false,[]),secret=await crypto.subtle.deriveBits({name:'ECDH',public:peer},pair.privateKey,256),prkKey=await mac(unb64(sub.keys.auth),secret),ikm=await hkdf(prkKey,concat(encoder.encode('WebPush: info\0'),unb64(sub.keys.p256dh),sender),32),prk=await mac(salt,ikm),cek=await hkdf(prk,encoder.encode('Content-Encoding: aes128gcm\0'),16),nonce=await hkdf(prk,encoder.encode('Content-Encoding: nonce\0'),12),aes=await crypto.subtle.importKey('raw',cek,{name:'AES-GCM'},false,['decrypt']),plain=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv:nonce},aes,body.slice(86)));assert.equal(plain.at(-1),2);assert.deepEqual(JSON.parse(new TextDecoder().decode(plain.slice(0,-1))),payload);const vapid=await generateVapid(),request=await pushRequest(sub,payload,vapid,'https://example.com');const token=/t=([^,]+)/.exec(request.headers.authorization)[1],parts=token.split('.'),pub=await crypto.subtle.importKey('raw',unb64(vapid.publicKey),{name:'ECDSA',namedCurve:'P-256'},false,['verify']);assert.ok(await crypto.subtle.verify({name:'ECDSA',hash:'SHA-256'},pub,unb64(parts[2]),encoder.encode(parts[0]+'.'+parts[1])));assert.equal(JSON.parse(new TextDecoder().decode(unb64(parts[1]))).aud,'https://web.push.apple.com');});
 test('unopened endless recurrence can produce reminders; completed and excluded entries do not',()=>{const now=Date.parse('2030-11-04T08:01:00Z'),series={id:'s',title:'Push Day',start:'2026-11-02',endMode:'never',stopAfter:'',excluded:[],weekdays:[1],dueOffset:null,time:'09:00',reminder:{minutes:0,anchor:'planned',clock:'09:00',timeZone:'Europe/Berlin'}};const state={tasks:[],series:[series]};assert.equal(reminderCandidates(state,now).length,1);state.tasks=[{id:'s--2030-11-04',status:'done'}];assert.equal(reminderCandidates(state,now).length,0);state.tasks=[];series.excluded=['2030-11-04'];assert.equal(reminderCandidates(state,now).length,0);});
 test('scheduled delivery is deduplicated per device',async()=>{const db=store(),{sub}=await subscription(),now=Date.now(),date=new Date(now).toISOString().slice(0,10),clock=new Date(now-60000).toISOString().slice(11,16),state={tasks:[{id:'reminder',title:'Aufgabe',planned:date,time:clock,status:'todo',reminder:{minutes:0,anchor:'planned',clock:'09:00',timeZone:'UTC'}}],series:[]};await db.put('accounts/test/state',state,null);await db.put('accounts/test/subscriptions',{phone:sub},null);let calls=0;const mock=async()=>{calls++;return new Response('',{status:201})};await dispatchReminders(db,'https://example.com',{fetch:mock});await dispatchReminders(db,'https://example.com',{fetch:mock});assert.equal(calls,1);});
+test('version 5 calendar events cannot be overwritten by an older device snapshot',async()=>{
+ const db=store(),options={auth:'chatgpt',scheduler:true};
+ const headers={'content-type':'application/json','oai-authenticated-user-id':'owner'};
+ const state={version:4,tasks:[],projects:[],series:[],templates:[],sessions:[]};
+ const update=(state,revision)=>handleApi(new Request('https://example.com/api/state',{
+  method:'PUT',headers,body:JSON.stringify({state,revision}),
+ }),db,options);
+ const old=await update(state,null);
+ assert.equal(old.status,200);
+ const event={id:'training',kind:'event',title:'Fußball',planned:'2026-11-19',time:'19:00',status:'todo'};
+ const next=await update({...state,version:5,tasks:[event]},(await old.json()).revision);
+ assert.equal(next.status,200);
+ assert.equal((await update(state,(await next.json()).revision)).status,409);
+ const response=await handleApi(new Request('https://example.com/api/state',{headers}),db,options);
+ assert.deepEqual((await response.json()).state.tasks,[event]);
+});
+
+test('converted series keeps an existing due reminder and suppresses finished history',()=>{
+ const now=Date.parse('2026-11-19T08:16:00Z');
+ const series={id:'weekly',kind:'event',title:'Fußball',start:'2026-11-19',weekdays:[4],endMode:'never',stopAfter:'',excluded:[],dueOffset:0};
+ const reminder={minutes:15,anchor:'due',clock:'09:30',timeZone:'Europe/Berlin'};
+ const entry={id:'weekly--2026-11-19',seriesId:'weekly',occurrenceDate:'2026-11-19',title:'Training',planned:'2026-11-20',due:'2026-11-19',time:'18:00',status:'todo',reminder};
+ const state={tasks:[entry],series:[series]};
+ assert.deepEqual(reminderCandidates(state,now).map(candidate=>candidate.when),[Date.parse('2026-11-19T08:15:00Z')]);
+ entry.status='done';
+ assert.deepEqual(reminderCandidates(state,now),[]);
+});

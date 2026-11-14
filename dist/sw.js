@@ -1,5 +1,5 @@
-const CACHE = 'daylight-shell-v6';
-const ASSETS = ['./','./index.html','./styles.css','./simple-home.css','./forms.css','./features.css','./domain.js','./app.js','./assets/coast.webp','./assets/icon.svg','./assets/icon-192.png','./assets/icon-512.png','./manifest.webmanifest'];
+const CACHE = 'daylight-shell-v7';
+const ASSETS = ['./','./index.html','./styles.css?v=7','./simple-home.css?v=7','./forms.css?v=7','./features.css','./domain.js?v=7','./app.js?v=7','./assets/coast.webp','./assets/icon.svg','./assets/icon-192.png','./assets/icon-512.png','./manifest.webmanifest'];
 self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('daylight-shell-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
 self.addEventListener('fetch',event=>{const url=new URL(event.request.url);if(event.request.method!=='GET'||url.origin!==location.origin||url.pathname.startsWith('/api/'))return;event.respondWith(fetch(event.request).then(response=>{if(response.ok){const copy=response.clone();caches.open(CACHE).then(cache=>cache.put(event.request,copy));}return response;}).catch(()=>caches.match(event.request).then(cached=>cached||(event.request.mode==='navigate'?caches.match('./index.html'):Response.error()))));});
